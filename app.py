@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
-from streamlit_gsheets import GSheetsConnection
+import gspread
+from google.oauth2.service_account import Credentials
 
 # Configuração da Página
 st.set_page_config(
@@ -9,8 +10,24 @@ st.set_page_config(
     layout="wide"
 )
 
-# Criando a conexão com o Google Sheets usando a URL fornecida
-conn = st.connection("gsheets", type=GSheetsConnection)
+# Função para conectar ao Google Sheets de forma segura via Secrets
+@st.cache_resource
+def conectar_gsheets():
+    scope = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive"
+    ]
+    creds_dict = dict(st.secrets["connections"]["gsheets"])
+    creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
+    client = gspread.authorize(creds)
+    
+    url = st.secrets["connections"]["gsheets"]["spreadsheet"]
+    return client.open_by_url(url)
+
+try:
+    spreadsheet = conectar_gsheets()
+except Exception as e:
+    st.error(f"Erro ao conectar com o Google Sheets: {e}")
 
 # Menu Lateral
 st.sidebar.title("Menu de Navegação")
@@ -21,13 +38,17 @@ if menu == "Dashboard":
     st.metric(label="Comissões do Mês", value="R$ 4.500,00", delta="+12%")
     st.metric(label="Clientes para Contatar Hoje", value="3")
     
-    # Exemplo de leitura rápida dos dados da planilha na visão geral
     try:
-        df_clientes = conn.read(worksheet="Clientes", ttl=5)
-        st.subheader("Clientes Cadastrados Recentemente")
-        st.dataframe(df_clientes.tail(5), use_container_width=True)
-    except Exception as e:
-        st.info("Cadastre o primeiro cliente na aba 'Clientes & CRM' para começar a visualizar os dados aqui!")
+        sheet_clientes = spreadsheet.worksheet("Clientes")
+        dados = sheet_clientes.get_all_records()
+        if dados:
+            df_clientes = pd.DataFrame(dados)
+            st.subheader("Clientes Cadastrados Recentemente")
+            st.dataframe(df_clientes.tail(5), use_container_width=True)
+        else:
+            st.info("A planilha 'Clientes' está vazia.")
+    except Exception:
+        st.info("Cadastre o primeiro cliente na aba 'Clientes & CRM' para começar!")
 
 elif menu == "Clientes & CRM":
     st.title("👥 Gestão de Clientes e Prospecção")
@@ -49,35 +70,27 @@ elif menu == "Clientes & CRM":
         if submitted:
             if empresa:
                 try:
-                    # Prepara a nova linha de dados
-                    novo_cliente = pd.DataFrame([{
-                        "Empresa": empresa,
-                        "Comprador": comprador,
-                        "Contato": contato,
-                        "Categoria": categoria,
-                        "Proximo Contato": str(proximo_contato),
-                        "Observacao": observacao
-                    }])
-
-                    # Lê os dados atuais, concatena o novo e atualiza a planilha
-                    existing_data = conn.read(worksheet="Clientes", ttl=0)
-                    updated_df = pd.concat([existing_data, novo_cliente], ignore_index=True)
-                    conn.update(worksheet="Clientes", data=updated_df)
-                    
+                    sheet_clientes = spreadsheet.worksheet("Clientes")
+                    nova_linha = [empresa, comprador, contato, categoria, str(proximo_contato), observacao]
+                    sheet_clientes.append_row(nova_linha)
                     st.success(f"Cliente {empresa} cadastrado com sucesso na planilha!")
                 except Exception as e:
-                    st.error(f"Erro ao salvar: {e}")
+                    st.error(f"Erro ao salvar na planilha: {e}")
             else:
                 st.warning("Por favor, preencha pelo menos o Nome da Empresa.")
 
-    # Exibindo a base de clientes atualizada abaixo do formulário
     st.divider()
     st.subheader("Base de Clientes")
     try:
-        df_clientes = conn.read(worksheet="Clientes", ttl=5)
-        st.dataframe(df_clientes, use_container_width=True)
+        sheet_clientes = spreadsheet.worksheet("Clientes")
+        dados = sheet_clientes.get_all_records()
+        if dados:
+            df_clientes = pd.DataFrame(dados)
+            st.dataframe(df_clientes, use_container_width=True)
+        else:
+            st.info("Nenhum cliente cadastrado ainda.")
     except Exception as e:
-        st.info("A aba 'Clientes' na sua planilha precisa ter os cabeçalhos configurados (Empresa, Comprador, Contato, Categoria, Proximo Contato, Observacao).")
+        st.warning("Certifique-se de que a aba 'Clientes' existe na planilha e possui os cabeçalhos corretos.")
 
 elif menu == "Vendas e Comissões":
     st.title("💰 Vendas e Comissões")
